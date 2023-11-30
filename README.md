@@ -135,6 +135,8 @@ echo "Script execution complete."
 
     Outputs a message indicating that the script execution is complete.
 
+
+Q3)
 This script provides a way to generate a significant amount of test data in the form of files and directories with different sizes. The time command is used to give an idea of the time taken for these operations.
 Multi-threaded Implementation in File System Commands
 
