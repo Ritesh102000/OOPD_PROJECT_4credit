@@ -11,9 +11,11 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <filesystem>
 #include <thread>
 
 using namespace std;
+namespace fs = filesystem;
 
 class LsCommand {
 public:
@@ -21,6 +23,7 @@ public:
         bool reverseOrder = false;
         bool listSize = false;
         bool sortBySize = false;
+        bool recursiveList = false;
 
         // Parse command-line options
         for (size_t i = 1; i < args.size(); ++i) {
@@ -30,58 +33,24 @@ public:
                 listSize = true;
             } else if (args[i] == "-S") {
                 sortBySize = true;
+            } else if (args[i] == "-R" || args[i] == "--recursive") {
+                recursiveList = true;
             } else if (args[i] == "--help") {
                 displayLsHelp();
                 return;
             }
         }
 
-        DIR* dir;
-        struct dirent* entry;
-        vector<string> files;
-
-        // Open and read the directory
-        if ((dir = opendir(".")) != NULL) {
-            while ((entry = readdir(dir)) != NULL) {
-                files.push_back(entry->d_name);
-            }
-            closedir(dir);
-
-            // Apply options
-            if (reverseOrder) {
-                reverse(files.begin(), files.end());
-            }
-
-            if (sortBySize) {
-                sort(files.begin(), files.end(), [this](const string& a, const string& b) {
-                    return compareFileSizes(a, b);
-                });
-            }
-
-            // Print the result
-            vector<thread> threads;
-            for (const string& file : files) {
-                threads.emplace_back(&LsCommand::printFileInfo, this, file, listSize);
-            }
-
-            for (auto& t : threads) {
-                t.join();
-            }
+        // Open and read the directory recursively if the option is enabled
+        if (recursiveList) {
+            listFilesRecursively(".", reverseOrder, listSize, sortBySize);
         } else {
-            perror("ls");
+            listFiles(".", reverseOrder, listSize, sortBySize);
         }
     }
 
 private:
-    void printFileInfo(const string& file, bool listSize) {
-        if (listSize) {
-            struct stat fileStat;
-            stat(file.c_str(), &fileStat);
-            cout << fileStat.st_size << "\t";
-        }
-        cout << file << endl;
-    }
-
+    // Function to display help information for ls command
     void displayLsHelp() {
         cout << "ls: List directory contents" << endl;
         cout << "Usage: ls [options]" << endl;
@@ -89,14 +58,79 @@ private:
         cout << "  -r\tList in reverse order" << endl;
         cout << "  -s\tList file size" << endl;
         cout << "  -S\tSort by file size" << endl;
+        cout << "  -R, --recursive\tList subdirectories recursively" << endl;
         cout << "  --help\tDisplay help information" << endl;
     }
 
-    bool compareFileSizes(const string& a, const string& b) {
-        struct stat fileStatA, fileStatB;
-        stat(a.c_str(), &fileStatA);
-        stat(b.c_str(), &fileStatB);
-        return fileStatA.st_size > fileStatB.st_size;
+    // Function to list files in a directory
+    void listFiles(const std::string& directory, bool reverseOrder, bool listSize, bool sortBySize) {
+        DIR* dir;
+        struct dirent* entry;
+        vector<string> files;
+
+        if ((dir = opendir(directory.c_str())) != NULL) {
+            while ((entry = readdir(dir)) != NULL) {
+                files.push_back(entry->d_name);
+            }
+            closedir(dir);
+
+            if (reverseOrder) {
+                reverse(files.begin(), files.end());
+            }
+
+            if (sortBySize) {
+                sort(files.begin(), files.end(), [directory](const string& a, const string& b) {
+                    struct stat fileStatA, fileStatB;
+                    string pathA = directory + "/" + a;
+                    string pathB = directory + "/" + b;
+                    stat(pathA.c_str(), &fileStatA);
+                    stat(pathB.c_str(), &fileStatB);
+                    return fileStatA.st_size > fileStatB.st_size;
+                });
+            }
+
+            vector<thread> threads;
+            for (const string& file : files) {
+                threads.emplace_back([this, &directory, &file, listSize]() {
+                    if (listSize) {
+                        struct stat fileStat;
+                        string filePath = directory + "/" + file;
+                        stat(filePath.c_str(), &fileStat);
+                        cout << fileStat.st_size << "\t";
+                    }
+                    cout << file << endl;
+                });
+            }
+
+            for (auto& thread : threads) {
+                thread.join();
+            }
+        } else {
+            perror("ls");
+        }
+    }
+
+    // Function to list files recursively
+    void listFilesRecursively(const std::string& directory, bool reverseOrder, bool listSize, bool sortBySize) {
+        listFiles(directory, reverseOrder, listSize, sortBySize);
+
+        // Vector to store threads
+        vector<thread> threads;
+
+        // Iterate over each file in the directory and list subdirectories recursively
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (fs::is_directory(entry.path())) {
+                threads.emplace_back([this, &entry, &reverseOrder, &listSize, &sortBySize]() {
+                    cout << "Subdirectory: " << entry.path().filename() << endl;
+                    listFilesRecursively(entry.path(), reverseOrder, listSize, sortBySize);
+                });
+            }
+        }
+
+        // Join all threads
+        for (auto& thread : threads) {
+            thread.join();
+        }
     }
 };
 
@@ -138,13 +172,6 @@ public:
             }
         }
 
-        // Perform the move operation in a separate thread
-        thread moveThread(&MvCommand::moveOperation, this, source, destination, forceOverwrite);
-        moveThread.join();
-    }
-
-private:
-    void moveOperation(const char* source, const char* destination, bool forceOverwrite) {
         // Perform the move operation
         if (rename(source, destination) != 0) {
             if (forceOverwrite) {
@@ -159,6 +186,8 @@ private:
         }
     }
 
+private:
+    // Function to display help information for mv command
     void displayMvHelp() {
         cout << "mv: Move or rename files" << endl;
         cout << "Usage: mv [options] <source> <destination>" << endl;
@@ -173,11 +202,14 @@ class RmCommand {
 public:
     void execute(const vector<string>& args) {
         bool interactivePrompt = false;
+        bool recursiveRemove = false;
 
         // Parse command-line options
         for (size_t i = 1; i < args.size(); ++i) {
             if (args[i] == "-i") {
                 interactivePrompt = true;
+            } else if (args[i] == "--recursive") {
+                recursiveRemove = true;
             } else if (args[i] == "--help") {
                 displayRmHelp();
                 return;
@@ -192,13 +224,6 @@ public:
 
         const char* file = args[1].c_str();
 
-        // Perform the remove operation in a separate thread
-        thread removeThread(&RmCommand::removeOperation, this, file, interactivePrompt);
-        removeThread.join();
-    }
-
-private:
-    void removeOperation(const char* file, bool interactivePrompt) {
         // Check if interactive prompt is enabled
         if (interactivePrompt) {
             char response;
@@ -211,57 +236,136 @@ private:
         }
 
         // Perform the remove operation
-        if (remove(file) != 0) {
-            perror("rm");
+        if (recursiveRemove) {
+            removeDirectory(file);
+        } else {
+            if (remove(file) != 0) {
+                perror("rm");
+            }
         }
     }
 
+private:
+    // Function to display help information for rm command
     void displayRmHelp() {
         cout << "rm: Remove files or directories" << endl;
         cout << "Usage: rm [options] <file>" << endl;
         cout << "Options:" << endl;
         cout << "  -i\tPrompt before every removal" << endl;
+        cout << "  --recursive\tRemove directories and their contents recursively" << endl;
         cout << "  --help\tDisplay help information" << endl;
+    }
+
+    // Function to remove a directory recursively
+    void removeDirectory(const std::string& path) {
+        vector<thread> threads;
+
+        // Iterate over each entry in the directory and remove it
+        for (const auto& entry : fs::directory_iterator(path)) {
+            threads.emplace_back([this, &entry]() {
+                const std::string& currentPath = entry.path();
+                if (fs::is_directory(currentPath)) {
+                    removeDirectory(currentPath);
+                } else {
+                    if (remove(currentPath.c_str()) != 0) {
+                        perror("rm");
+                    }
+                }
+            });
+        }
+
+        // Join all threads
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        // Remove the main directory after its contents have been removed
+        if (remove(path.c_str()) != 0) {
+            perror("rm");
+        }
     }
 };
 
 class CpCommand {
 public:
-    void execute(const vector<string>& args) {
+    void execute(const std::vector<std::string>& args) {
         // Parse command-line options
+        bool recursiveCopy = false;
         for (size_t i = 1; i < args.size(); ++i) {
             if (args[i] == "--help") {
                 displayCpHelp();
                 return;
+            } else if (args[i] == "-r" || args[i] == "--recursive") {
+                recursiveCopy = true;
             }
         }
 
         // Check for the correct number of arguments
         if (args.size() < 3) {
-            cerr << "cp: missing source or destination file" << endl;
+            std::cerr << "cp: missing source or destination file" << std::endl;
             return;
         }
 
-        // Perform the copy operation in a separate thread
-        thread copyThread(&CpCommand::copyOperation, this, args[1], args[2]);
-        copyThread.join();
+        const std::string& source = args[1];
+        const std::string& destination = args[2];
+
+        // Check if the source is a directory
+        if (fs::is_directory(source)) {
+            copyDirectory(source, destination, recursiveCopy);
+        } else {
+            copyFile(source, destination);
+        }
     }
 
 private:
-    void copyOperation(const string& source, const string& destination) {
-        ifstream sourceStream(source, ios::binary);
-        ofstream destStream(destination, ios::binary);
-
-        destStream << sourceStream.rdbuf();
+    // Function to display help information for cp command
+    void displayCpHelp() {
+        std::cout << "cp: Copy files" << std::endl;
+        std::cout << "Usage: cp [options] <source> <destination>" << std::endl;
+        std::cout << "Options:" << std::endl;
+        std::cout << "  -r, --recursive\tCopy directories recursively" << std::endl;
+        std::cout << "  --help\tDisplay help information" << std::endl;
     }
 
-    void displayCpHelp() {
-        cout << "cp: Copy files" << endl;
-        cout << "Usage: cp [options] <source> <destination>" << endl;
-        cout << "Options:" << endl;
-        cout << "  --help\tDisplay help information" << endl;
+    // Function to copy a file
+    void copyFile(const std::string& source, const std::string& destination) {
+        std::ifstream sourceFile(source, std::ios::binary);
+        std::ofstream destFile(destination, std::ios::binary);
+
+        destFile << sourceFile.rdbuf();
+    }
+
+    // Function to copy a directory
+    void copyDirectory(const std::string& source, const std::string& destination, bool recursive) {
+        // Create the destination directory if it doesn't exist
+        fs::create_directories(destination);
+
+        vector<thread> threads;
+
+        // Iterate over each file in the source directory and copy it to the destination
+        for (const auto& entry : fs::directory_iterator(source)) {
+            threads.emplace_back([this, &entry, &destination, &recursive]() {
+                const std::string& sourceFile = entry.path();
+                const std::string& destFile = fs::path(destination) / entry.path().filename();
+
+                // Recursively copy directories if the option is enabled
+                if (fs::is_directory(sourceFile) && recursive) {
+                    copyDirectory(sourceFile, destFile, true);
+                } else {
+                    copyFile(sourceFile, destFile);
+                }
+            });
+        }
+
+        // Join all threads
+        for (auto& thread : threads) {
+            thread.join();
+        }
     }
 };
+
+// ... (CdCommand, Shell, main function remain the same)
+
 
 class CdCommand {
 public:

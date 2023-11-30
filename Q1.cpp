@@ -14,7 +14,6 @@
 #include <filesystem>
 
 using namespace std;
-
 namespace fs = filesystem;
 
 class LsCommand {
@@ -23,6 +22,7 @@ public:
         bool reverseOrder = false;
         bool listSize = false;
         bool sortBySize = false;
+        bool recursiveList = false;
 
         // Parse command-line options
         for (size_t i = 1; i < args.size(); ++i) {
@@ -32,48 +32,19 @@ public:
                 listSize = true;
             } else if (args[i] == "-S") {
                 sortBySize = true;
+            } else if (args[i] == "-R" || args[i] == "--recursive") {
+                recursiveList = true;
             } else if (args[i] == "--help") {
                 displayLsHelp();
                 return;
             }
         }
 
-        DIR* dir;
-        struct dirent* entry;
-        vector<string> files;
-
-        // Open and read the directory
-        if ((dir = opendir(".")) != NULL) {
-            while ((entry = readdir(dir)) != NULL) {
-                files.push_back(entry->d_name);
-            }
-            closedir(dir);
-
-            // Apply options
-            if (reverseOrder) {
-                reverse(files.begin(), files.end());
-            }
-
-            if (sortBySize) {
-                sort(files.begin(), files.end(), [](const string& a, const string& b) {
-                    struct stat fileStatA, fileStatB;
-                    stat(a.c_str(), &fileStatA);
-                    stat(b.c_str(), &fileStatB);
-                    return fileStatA.st_size > fileStatB.st_size;
-                });
-            }
-
-            // Print the result
-            for (const string& file : files) {
-                if (listSize) {
-                    struct stat fileStat;
-                    stat(file.c_str(), &fileStat);
-                    cout << fileStat.st_size << "\t";
-                }
-                cout << file << endl;
-            }
+        // Open and read the directory recursively if the option is enabled
+        if (recursiveList) {
+            listFilesRecursively(".", reverseOrder, listSize, sortBySize);
         } else {
-            perror("ls");
+            listFiles(".", reverseOrder, listSize, sortBySize);
         }
     }
 
@@ -86,7 +57,62 @@ private:
         cout << "  -r\tList in reverse order" << endl;
         cout << "  -s\tList file size" << endl;
         cout << "  -S\tSort by file size" << endl;
+        cout << "  -R, --recursive\tList subdirectories recursively" << endl;
         cout << "  --help\tDisplay help information" << endl;
+    }
+
+    // Function to list files in a directory
+    void listFiles(const std::string& directory, bool reverseOrder, bool listSize, bool sortBySize) {
+        DIR* dir;
+        struct dirent* entry;
+        vector<string> files;
+
+        if ((dir = opendir(directory.c_str())) != NULL) {
+            while ((entry = readdir(dir)) != NULL) {
+                files.push_back(entry->d_name);
+            }
+            closedir(dir);
+
+            if (reverseOrder) {
+                reverse(files.begin(), files.end());
+            }
+
+            if (sortBySize) {
+                sort(files.begin(), files.end(), [directory](const string& a, const string& b) {
+                    struct stat fileStatA, fileStatB;
+                    string pathA = directory + "/" + a;
+                    string pathB = directory + "/" + b;
+                    stat(pathA.c_str(), &fileStatA);
+                    stat(pathB.c_str(), &fileStatB);
+                    return fileStatA.st_size > fileStatB.st_size;
+                });
+            }
+
+            for (const string& file : files) {
+                if (listSize) {
+                    struct stat fileStat;
+                    string filePath = directory + "/" + file;
+                    stat(filePath.c_str(), &fileStat);
+                    cout << fileStat.st_size << "\t";
+                }
+                cout << file << endl;
+            }
+        } else {
+            perror("ls");
+        }
+    }
+
+    // Function to list files recursively
+    void listFilesRecursively(const std::string& directory, bool reverseOrder, bool listSize, bool sortBySize) {
+        listFiles(directory, reverseOrder, listSize, sortBySize);
+
+        // Iterate over each file in the directory and list subdirectories recursively
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (fs::is_directory(entry.path())) {
+                cout << "Subdirectory: " << entry.path().filename() << endl;
+                listFilesRecursively(entry.path(), reverseOrder, listSize, sortBySize);
+            }
+        }
     }
 };
 
@@ -158,11 +184,14 @@ class RmCommand {
 public:
     void execute(const vector<string>& args) {
         bool interactivePrompt = false;
+        bool recursiveRemove = false;
 
         // Parse command-line options
         for (size_t i = 1; i < args.size(); ++i) {
             if (args[i] == "-i") {
                 interactivePrompt = true;
+            } else if (args[i] == "--recursive") {
+                recursiveRemove = true;
             } else if (args[i] == "--help") {
                 displayRmHelp();
                 return;
@@ -189,8 +218,12 @@ public:
         }
 
         // Perform the remove operation
-        if (remove(file) != 0) {
-            perror("rm");
+        if (recursiveRemove) {
+            removeDirectory(file);
+        } else {
+            if (remove(file) != 0) {
+                perror("rm");
+            }
         }
     }
 
@@ -201,7 +234,26 @@ private:
         cout << "Usage: rm [options] <file>" << endl;
         cout << "Options:" << endl;
         cout << "  -i\tPrompt before every removal" << endl;
+        cout << "  --recursive\tRemove directories and their contents recursively" << endl;
         cout << "  --help\tDisplay help information" << endl;
+    }
+
+    // Function to remove a directory recursively
+    void removeDirectory(const std::string& path) {
+        for (const auto& entry : fs::directory_iterator(path)) {
+            const std::string& currentPath = entry.path();
+            if (fs::is_directory(currentPath)) {
+                removeDirectory(currentPath);
+            } else {
+                if (remove(currentPath.c_str()) != 0) {
+                    perror("rm");
+                }
+            }
+        }
+
+        if (remove(path.c_str()) != 0) {
+            perror("rm");
+        }
     }
 };
 
@@ -214,7 +266,7 @@ public:
             if (args[i] == "--help") {
                 displayCpHelp();
                 return;
-            } else if (args[i] == "-r") {
+            } else if (args[i] == "-r" || args[i] == "--recursive") {
                 recursiveCopy = true;
             }
         }
@@ -242,7 +294,7 @@ private:
         std::cout << "cp: Copy files" << std::endl;
         std::cout << "Usage: cp [options] <source> <destination>" << std::endl;
         std::cout << "Options:" << std::endl;
-        std::cout << "  -r\tCopy directories recursively" << std::endl;
+        std::cout << "  -r, --recursive\tCopy directories recursively" << std::endl;
         std::cout << "  --help\tDisplay help information" << std::endl;
     }
 
