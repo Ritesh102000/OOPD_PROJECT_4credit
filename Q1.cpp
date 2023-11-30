@@ -11,8 +11,11 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <filesystem>
 
 using namespace std;
+
+namespace fs = filesystem;
 
 class LsCommand {
 public:
@@ -204,35 +207,70 @@ private:
 
 class CpCommand {
 public:
-    void execute(const vector<string>& args) {
+    void execute(const std::vector<std::string>& args) {
         // Parse command-line options
+        bool recursiveCopy = false;
         for (size_t i = 1; i < args.size(); ++i) {
             if (args[i] == "--help") {
                 displayCpHelp();
                 return;
+            } else if (args[i] == "-r") {
+                recursiveCopy = true;
             }
         }
 
         // Check for the correct number of arguments
         if (args.size() < 3) {
-            cerr << "cp: missing source or destination file" << endl;
+            std::cerr << "cp: missing source or destination file" << std::endl;
             return;
         }
 
-        // Perform the copy operation
-        ifstream source(args[1], ios::binary);
-        ofstream dest(args[2], ios::binary);
+        const std::string& source = args[1];
+        const std::string& destination = args[2];
 
-        dest << source.rdbuf();
+        // Check if the source is a directory
+        if (fs::is_directory(source)) {
+            copyDirectory(source, destination, recursiveCopy);
+        } else {
+            copyFile(source, destination);
+        }
     }
 
 private:
     // Function to display help information for cp command
     void displayCpHelp() {
-        cout << "cp: Copy files" << endl;
-        cout << "Usage: cp [options] <source> <destination>" << endl;
-        cout << "Options:" << endl;
-        cout << "  --help\tDisplay help information" << endl;
+        std::cout << "cp: Copy files" << std::endl;
+        std::cout << "Usage: cp [options] <source> <destination>" << std::endl;
+        std::cout << "Options:" << std::endl;
+        std::cout << "  -r\tCopy directories recursively" << std::endl;
+        std::cout << "  --help\tDisplay help information" << std::endl;
+    }
+
+    // Function to copy a file
+    void copyFile(const std::string& source, const std::string& destination) {
+        std::ifstream sourceFile(source, std::ios::binary);
+        std::ofstream destFile(destination, std::ios::binary);
+
+        destFile << sourceFile.rdbuf();
+    }
+
+    // Function to copy a directory
+    void copyDirectory(const std::string& source, const std::string& destination, bool recursive) {
+        // Create the destination directory if it doesn't exist
+        fs::create_directories(destination);
+
+        // Iterate over each file in the source directory and copy it to the destination
+        for (const auto& entry : fs::directory_iterator(source)) {
+            const std::string& sourceFile = entry.path();
+            const std::string& destFile = fs::path(destination) / entry.path().filename();
+
+            // Recursively copy directories if the option is enabled
+            if (fs::is_directory(sourceFile) && recursive) {
+                copyDirectory(sourceFile, destFile, true);
+            } else {
+                copyFile(sourceFile, destFile);
+            }
+        }
     }
 };
 
